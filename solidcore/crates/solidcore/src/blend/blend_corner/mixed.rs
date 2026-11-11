@@ -471,31 +471,19 @@ impl SolutionObject for MxObject {
 /// its end, where it is turned. Inside the edge means one-sided: from the interval above
 /// the start (`from_left` true) and from the interval below the end (`from_left` false);
 /// [`edge::end_tangent`] takes both from above, which at the end reads past the edge. A
-/// closed edge leaves its vertex at its start (fork b785227).
+/// closed edge leaves its vertex at its start (fork b785227). The evaluation is
+/// [`crate::query::edge_turn::leaving_derivative`]; this adds the closed edge's start and
+/// this module's errors (a vertex the edge does not meet, no curve, a tangent of no length).
 fn leaving(k: &Kernel, b: &Brep, e: EdgeId, vertex: VertexId, op: &'static str) -> Result<Vec3> {
     let at_start = edge::start_vertex(b, e)? == Some(vertex);
     if !at_start && edge::end_vertex(b, e)? != Some(vertex) {
         // the edge does not meet the vertex
         return Err(SolidError::sm_err(op));
     }
-    let curve = edge::curve(b, e)?.ok_or_else(|| SolidError::null_pointer(op))?;
-    let ivl = edge::interval(b, e)?;
-    let pv = curve.evaluate(
-        k,
-        if at_start { ivl.min() } else { ivl.max() },
-        1,
-        at_start,
-        true,
-    )?;
-    let mut d = pv
-        .get(1)
-        .copied()
-        .ok_or_else(|| SolidError::sm_err(op))?
-        .unitize()?;
-    if !at_start {
-        d = -d;
-    }
-    Ok(d)
+    // the one evaluation, inside the edge and turned away from the vertex
+    let d = crate::query::edge_turn::leaving_derivative(k, b, e, at_start)?
+        .ok_or_else(|| SolidError::null_pointer(op))?;
+    d.unitize()
 }
 
 /// `sm_MixedParam`: the parameter of the point of `curve` nearest `pnt`.

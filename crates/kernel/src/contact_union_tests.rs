@@ -123,8 +123,9 @@ mod notched_block_on_a_bored_wall {
         assert_exact(&wall(false, false), &block(true), true, wall_contact(), "far face");
     }
 
-    // A second bore crossing the first adds faces far from the contact; the join stays exact
-    // (and quick: it once took close to a minute here).
+    // A second bore crossing the first adds faces far from the contact; the join stays exact.
+    // It was also where the fallback cost most: the first of these two joins took 57 s on a
+    // machine where each now takes about 2.5 s. Not asserted: a test must not depend on timing.
     #[test]
     fn joins_exactly_beside_crossing_bores() {
         assert_exact(&wall(false, true), &block(false), false, wall_contact(), "near face, crossing bores");

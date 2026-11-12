@@ -870,3 +870,40 @@ fn the_limit_itself_is_outside() {
     })
     .unwrap();
 }
+
+/// Cancelled at any poll of the pass, on a move that would be kept and spreads its edges'
+/// tolerances: the pass returns `Cancelled`, never a quiet fallback, and puts every point and
+/// tolerance back bit for bit, wherever the cancellation fell (before or after the spread).
+#[test]
+fn a_cancelled_pass_returns_cancelled_and_puts_everything_back() {
+    use solidcore::kernel::CancelToken;
+
+    // (polls made, and for a pass that failed: whether it was `Cancelled`, whether all is back)
+    let polls = |n: u64| {
+        let body = make_box([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).unwrap();
+        let mut out = None;
+        with_body("centre", &body, |k, b| {
+            spread_corner(k, b, false)?;
+            let before = tolerance_state(b);
+            let token = CancelToken::after_polls(n);
+            let was = k.cancel.replace(token.clone());
+            let r = super::boolean::centre_wide_vertices(k, b);
+            k.cancel = was;
+            let made = token.polls().unwrap();
+            out = Some(match r {
+                Ok(()) => (made, None),
+                Err(e) => (made, Some((e.is_cancelled(), tolerance_state(b) == before))),
+            });
+            Ok(())
+        })
+        .unwrap();
+        out.unwrap()
+    };
+    let (all, finished) = polls(u64::MAX);
+    assert!(finished.is_none(), "uncancelled, the pass runs through");
+    assert!(all > 0, "the pass never polls its kernel");
+    for n in 1..=all {
+        let (_, r) = polls(n);
+        assert_eq!(r, Some((true, true)), "cancelled at poll {n} of {all}");
+    }
+}

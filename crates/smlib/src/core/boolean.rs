@@ -154,9 +154,10 @@ fn usable(call: &'static str, bodies: &[&Body]) -> Result<()> {
 /// edge use's UV trim end, on its face's surface, lies within the vertex's and edge's
 /// tolerances, as the validator requires of the curve ends. Otherwise, or when a gap cannot be
 /// computed, the vertex and the tolerances are put back as they were, and the tolerance update
-/// that follows decides as it did without this pass. A cancelled kernel is put back the same
-/// way and its error returned; the pass otherwise fails only on a vertex or edge missing from
-/// `b`, a broken result that the check would refuse anyway.
+/// that follows decides as it did without this pass. An error the kernel never swallows
+/// (cancelled, unported, face trims unavailable) is put back the same way and, once that put-back
+/// succeeds, returned; otherwise the pass fails only on a vertex or edge missing from `b`, a broken
+/// result that the check would refuse anyway.
 pub(super) fn centre_wide_vertices(k: &mut Kernel, b: &mut Brep) -> SolidResult<()> {
     use solidcore::geom::tol::LARGE_SMALL_SIZE_RATIO;
 
@@ -169,7 +170,11 @@ pub(super) fn centre_wide_vertices(k: &mut Kernel, b: &mut Brep) -> SolidResult<
         let before = Tolerances::of(b, v)?;
         match centre_vertex(k, b, v, limit) {
             Ok(true) => {}
-            Err(e) if e.is_cancelled() => {
+            Err(
+                e @ (solidcore::SolidError::Cancelled { .. }
+                | solidcore::SolidError::Unported { .. }
+                | solidcore::SolidError::FaceTrimsUnavailable { .. }),
+            ) => {
                 before.restore(b)?;
                 return Err(e);
             }
@@ -187,6 +192,8 @@ fn centre_vertex(k: &mut Kernel, b: &mut Brep, v: solidcore::topology::VertexId,
     use solidcore::heal::gap::Gap;
     use solidcore::topology::{vertex, vertexuse};
 
+    // a cancelled job stops at each vertex, before it is touched and before its ends are checked
+    k.check_cancelled("centre_wide_vertices")?;
     let mut ends = Vec::new();
     for vu in vertex::vertexuses(b, v)? {
         if let Some(g) = vertexuse::vertex_edge_gap(k, b, vu, true)? {
@@ -222,6 +229,7 @@ fn centre_vertex(k: &mut Kernel, b: &mut Brep, v: solidcore::topology::VertexId,
         edge::set_tolerance(b, e, spread, true, true)?;
     }
     b.vertex_mut(v)?.tolerance = tolerance;
+    k.check_cancelled("centre_wide_vertices")?;
     ends_within(k, b, v)
 }
 

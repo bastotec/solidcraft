@@ -1,0 +1,237 @@
+{
+ "description": "A pocket cut whose outline starts exactly on a slanted outer face and leaves it at a shallow angle (the Mini VMC Stand Down Middle, from its Onshape source). The cut's intersection put a vertex 0.0056 mm from the end of one of its edges; growing the vertex tolerance to twice that (0.0112 mm) went past the B-rep's 0.01 mm, and SMLib's check refused the cut as Test #82 (vertex tolerance relative to brep tolerance). Builds on 0.30.1.",
+ "commands": [
+  {
+   "command": "sketch.create",
+   "params": {
+    "plane": {
+     "origin": [
+      0,
+      0,
+      0
+     ],
+     "x_dir": [
+      1,
+      0,
+      0
+     ],
+     "y_dir": [
+      0,
+      0,
+      1
+     ]
+    },
+    "name": "Sketch 1 (G)"
+   }
+  },
+  {
+   "command": "sketch.line",
+   "params": {
+    "points": [
+     [
+      26.716,
+      -3.6805
+     ],
+     [
+      26.716,
+      51.3195
+     ],
+     [
+      18.716,
+      51.3195
+     ],
+     [
+      18.716,
+      58.6204
+     ],
+     [
+      15.7793,
+      59.9045
+     ],
+     [
+      -2.7312,
+      42.786
+     ],
+     [
+      -11.6646,
+      30.7364
+     ],
+     [
+      -28.284,
+      0.3195
+     ],
+     [
+      -28.284,
+      -3.6805
+     ]
+    ],
+    "closed": true
+   }
+  },
+  {
+   "command": "sketch.finish_auto_constrain",
+   "params": {}
+  },
+  {
+   "command": "solid.extrude",
+   "params": {
+    "distance": 60,
+    "body_name": "Stand Down - Middle",
+    "name": "Extrude 1"
+   }
+  },
+  {
+   "command": "sketch.create",
+   "params": {
+    "plane": {
+     "origin": [
+      0,
+      -6,
+      0
+     ],
+     "x_dir": [
+      1,
+      0,
+      0
+     ],
+     "y_dir": [
+      0,
+      0,
+      1
+     ]
+    },
+    "name": "Pocket 1 sk"
+   }
+  },
+  {
+   "command": "sketch.arc.three_point",
+   "params": {
+    "start": [
+     15.3581,
+     59.515
+    ],
+    "through": [
+     14.8805,
+     58.841
+    ],
+    "end": [
+     14.716,
+     58.0466
+    ]
+   }
+  },
+  {
+   "command": "sketch.line",
+   "params": {
+    "points": [
+     [
+      14.716,
+      58.0466
+     ],
+     [
+      14.716,
+      12.3195
+     ]
+    ],
+    "closed": false
+   }
+  },
+  {
+   "command": "sketch.arc.three_point",
+   "params": {
+    "start": [
+     14.716,
+     12.3195
+    ],
+    "through": [
+     13.5445,
+     9.4911
+    ],
+    "end": [
+     10.716,
+     8.3195
+    ]
+   }
+  },
+  {
+   "command": "sketch.line",
+   "params": {
+    "points": [
+     [
+      10.716,
+      8.3195
+     ],
+     [
+      -22.7266,
+      8.3195
+     ]
+    ],
+    "closed": false
+   }
+  },
+  {
+   "command": "sketch.arc.three_point",
+   "params": {
+    "start": [
+     -22.7266,
+     8.3195
+    ],
+    "through": [
+     -23.7857,
+     8.0161
+    ],
+    "end": [
+     -24.4817,
+     7.2785
+    ]
+   }
+  },
+  {
+   "command": "sketch.line",
+   "params": {
+    "points": [
+     [
+      -24.4817,
+      7.2785
+     ],
+     [
+      -26.2368,
+      8.2375
+     ],
+     [
+      -13.3535,
+      31.8166
+     ],
+     [
+      -4.2264,
+      44.1274
+     ],
+     [
+      14.0002,
+      60.9833
+     ],
+     [
+      15.3581,
+      59.515
+     ]
+    ],
+    "closed": false
+   }
+  },
+  {
+   "command": "sketch.finish_auto_constrain",
+   "params": {}
+  },
+  {
+   "command": "solid.extrude",
+   "params": {
+    "distance": 21,
+    "operation": "cut",
+    "targets": [
+     "Stand Down - Middle"
+    ],
+    "name": "Pocket 1"
+   }
+  }
+ ]
+}

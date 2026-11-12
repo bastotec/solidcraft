@@ -138,7 +138,7 @@ fn usable(call: &'static str, bodies: &[&Body]) -> Result<()> {
     Ok(())
 }
 
-/// Moves each vertex of `b` whose tolerance SMLib's check refuses (over
+/// Moves each vertex of `b` whose tolerance SMLib's check refuses (not under
 /// [`LARGE_SMALL_SIZE_RATIO`] times the B-rep's, `Test #82`) to the centre of the box round its
 /// edges' ends, where that brings the tolerances it needs inside the limit, and sets its
 /// tolerance to what they need.
@@ -154,18 +154,26 @@ fn usable(call: &'static str, bodies: &[&Body]) -> Result<()> {
 /// edge use's UV trim end, on its face's surface, lies within the vertex's and edge's
 /// tolerances, as the validator requires of the curve ends. Otherwise, or when a gap cannot be
 /// computed, the vertex and the tolerances are put back as they were, and the tolerance update
-/// that follows decides as it did without this pass.
+/// that follows decides as it did without this pass. A cancelled kernel is put back the same
+/// way and its error returned; the pass otherwise fails only on a vertex or edge missing from
+/// `b`, a broken result that the check would refuse anyway.
 pub(super) fn centre_wide_vertices(k: &mut Kernel, b: &mut Brep) -> SolidResult<()> {
     use solidcore::geom::tol::LARGE_SMALL_SIZE_RATIO;
 
     let limit = LARGE_SMALL_SIZE_RATIO * b.tolerance();
     for v in p1::vertices(b, None)? {
-        if b.vertex(v)?.tolerance <= limit {
+        // the check wants a vertex's tolerance strictly under the limit
+        if b.vertex(v)?.tolerance < limit {
             continue;
         }
         let before = Tolerances::of(b, v)?;
-        if !matches!(centre_vertex(k, b, v, limit), Ok(true)) {
-            before.restore(b)?;
+        match centre_vertex(k, b, v, limit) {
+            Ok(true) => {}
+            Err(e) if e.is_cancelled() => {
+                before.restore(b)?;
+                return Err(e);
+            }
+            Ok(false) | Err(_) => before.restore(b)?,
         }
     }
     Ok(())
@@ -207,7 +215,7 @@ fn centre_vertex(k: &mut Kernel, b: &mut Brep, v: solidcore::topology::VertexId,
         widest = widest.max(b.edge(e)?.tolerance);
     }
     let tolerance = need.max(widest);
-    if tolerance > limit {
+    if tolerance >= limit {
         return Ok(false);
     }
     for &e in &edges {

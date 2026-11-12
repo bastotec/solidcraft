@@ -649,3 +649,224 @@ fn a_body_inside_the_limit_is_unchanged() {
     })
     .unwrap();
 }
+
+/// Corner 0 of a 10 mm box, the box's `Test #82` limit, and the vertex.
+fn corner_and_limit(b: &solidcore::topology::Brep) -> (solidcore::topology::VertexId, solidcore::Point3, f64) {
+    let v = b.vertex_list()[0];
+    let limit = solidcore::geom::tol::LARGE_SMALL_SIZE_RATIO * b.tolerance();
+    (v, b.vertex(v).unwrap().point, limit)
+}
+
+/// Moves the UV trim of one use of an edge at `v` by `du` along u, every 3D curve left as it
+/// is; how far its points moved on its face's (planar) surface. Panics without a trim there.
+fn shift_a_trim(
+    k: &solidcore::Kernel,
+    b: &mut solidcore::topology::Brep,
+    v: solidcore::topology::VertexId,
+    du: f64,
+) -> std::result::Result<f64, solidcore::SolidError> {
+    use solidcore::topology::{edgeuse, vertex};
+    use solidcore::{Point2, Point3};
+
+    for e in vertex::edges(b, v, None)? {
+        for eu in b.edge(e)?.edgeuses.clone() {
+            let Some(f) = edgeuse::p1::face(b, eu)? else { continue };
+            let (Some(trim), Some(surface)) = (b.edgeuse(eu)?.uv_trim_curve.as_ref(), b.face(f)?.surface.as_ref()) else {
+                continue;
+            };
+            let t = trim.natural_interval().min();
+            let was = trim.evaluate_point(k, t)?;
+            let was = surface.evaluate_point(k, Point2::new(was.x, was.y))?;
+            let along_u = Axis2Placement::new(Point3::new(du, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+            let trim = b.edgeuse_mut(eu)?.uv_trim_curve.as_mut().expect("the trim read above");
+            trim.transform(k, &along_u, None)?;
+            let now = trim.evaluate_point(k, t)?;
+            let surface = b.face(f)?.surface.as_ref().expect("the surface read above");
+            let moved = surface.evaluate_point(k, Point2::new(now.x, now.y))?.distance(was);
+            if moved > 0.5 * du.abs() {
+                return Ok(moved);
+            }
+            // the trim ends on the surface's edge, where it is clamped: shift it inward instead
+            let back = Axis2Placement::new(Point3::new(-2.0 * du, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+            let trim = b.edgeuse_mut(eu)?.uv_trim_curve.as_mut().expect("the trim read above");
+            trim.transform(k, &back, None)?;
+            let now = trim.evaluate_point(k, t)?;
+            let surface = b.face(f)?.surface.as_ref().expect("the surface read above");
+            return Ok(surface.evaluate_point(k, Point2::new(now.x, now.y))?.distance(was));
+        }
+    }
+    panic!("no edge at the corner has a UV trim");
+}
+
+/// `ends_within` against an independent distance: with every edge end at a box corner, the
+/// vertex moved off by less than its tolerance plus its tightest edge's has them within, and by
+/// more than its tolerance plus its widest edge's has them outside.
+#[test]
+fn ends_within_measures_each_end_against_both_tolerances() {
+    let body = make_box([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).unwrap();
+    with_body("ends", &body, |k, b| {
+        let (v, corner, _) = corner_and_limit(b);
+        let edge_tols: Vec<f64> = solidcore::topology::vertex::edges(b, v, None)?.iter().map(|&e| b.edge(e).unwrap().tolerance).collect();
+        let vt = b.vertex(v)?.tolerance;
+        let tightest = vt + edge_tols.iter().copied().fold(f64::MAX, f64::min);
+        let widest = vt + edge_tols.iter().copied().fold(0.0, f64::max);
+        b.vertex_mut(v)?.point = corner + Vec3::new(0.99 * tightest, 0.0, 0.0);
+        assert!(super::boolean::ends_within(k, b, v)?, "{} inside {tightest}", 0.99 * tightest);
+        b.vertex_mut(v)?.point = corner + Vec3::new(1.01 * widest, 0.0, 0.0);
+        assert!(!super::boolean::ends_within(k, b, v)?, "{} outside {widest}", 1.01 * widest);
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// A UV trim whose end is off the vertex is caught although every 3D curve end is on it.
+#[test]
+fn ends_within_sees_a_trim_end_off_its_vertex() {
+    let body = make_box([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).unwrap();
+    with_body("ends", &body, |k, b| {
+        let (v, _, limit) = corner_and_limit(b);
+        assert!(super::boolean::ends_within(k, b, v)?);
+        let moved = shift_a_trim(k, b, v, 0.05)?;
+        assert!(moved > 2.0 * limit, "the trim moved {moved}");
+        assert!(!super::boolean::ends_within(k, b, v)?);
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// Corner 0 pushed 4 µm off with a tolerance five times the limit, and one of its edges ending
+/// 3 µm short of it, so a kept move spreads that edge's tolerance and its far vertex's; with
+/// `trim_off` a UV trim at the corner is also moved 50 µm. The corner vertex, the far vertex and
+/// the far vertex's tolerance before.
+fn spread_corner(
+    k: &solidcore::Kernel,
+    b: &mut solidcore::topology::Brep,
+    trim_off: bool,
+) -> std::result::Result<(solidcore::topology::VertexId, solidcore::topology::VertexId, f64), solidcore::SolidError> {
+    use solidcore::topology::{edge, vertex};
+
+    let (v, corner, limit) = corner_and_limit(b);
+    let e = vertex::edges(b, v, None)?[0];
+    let ivl = edge::interval(b, e)?;
+    let length = {
+        let c = edge::curve(b, e)?.expect("a box edge has a curve");
+        c.evaluate_point(k, ivl.min())?.distance(c.evaluate_point(k, ivl.max())?)
+    };
+    let dt = 0.003 * (ivl.max() - ivl.min()) / length;
+    let mut short = ivl;
+    if edge::start_end_vertices(b, e)?.0 == Some(v) {
+        short.set_min(ivl.min() + dt)?;
+    } else {
+        short.set_max(ivl.max() - dt)?;
+    }
+    edge::set_interval(b, e, &short)?;
+    let c = edge::curve(b, e)?.expect("a box edge has a curve");
+    let nearest = c.evaluate_point(k, short.min())?.distance(corner).min(c.evaluate_point(k, short.max())?.distance(corner));
+    assert!((nearest - 0.003).abs() < 1e-9, "the edge ends {nearest} from the corner");
+    b.vertex_mut(v)?.point = corner + Vec3::new(0.004, 0.0, 0.0);
+    b.vertex_mut(v)?.tolerance = 5.0 * limit;
+    if trim_off {
+        let moved = shift_a_trim(k, b, v, 0.05)?;
+        assert!(moved > 2.0 * limit, "the trim moved {moved}");
+    }
+    let far = edge::other_vertex(b, e, Some(v))?.expect("a box edge has two vertices");
+    Ok((v, far, b.vertex(far)?.tolerance))
+}
+
+/// The control for the next test: without the trim off, the move is kept and spreads the
+/// shortened edge's tolerance to its far vertex.
+#[test]
+fn a_kept_move_spreads_its_edges_tolerances() {
+    let body = make_box([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).unwrap();
+    with_body("centre", &body, |k, b| {
+        let (v, corner, limit) = corner_and_limit(b);
+        let (_, far, far_was) = spread_corner(k, b, false)?;
+        super::boolean::centre_wide_vertices(k, b)?;
+        assert!(b.vertex(v)?.point.distance(corner) < 0.002, "{:?}", b.vertex(v)?.point);
+        assert!(b.vertex(far)?.tolerance > far_was, "far vertex {} not spread", b.vertex(far)?.tolerance);
+        for &w in b.vertex_list() {
+            assert!(b.vertex(w)?.tolerance < limit);
+            assert!(super::boolean::ends_within(k, b, w)?, "an edge end outside vertex {w:?}");
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// The same corner with a UV trim end 50 µm off: the move reaches the spread of the edges'
+/// tolerances and is then refused, so every point and tolerance (the far vertex's included) is
+/// put back bit for bit, and the corner's cached gaps are those of where it is again.
+#[test]
+fn a_move_refused_after_its_tolerances_spread_is_put_back() {
+    use solidcore::topology::{vertex, vertexuse};
+
+    let body = make_box([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).unwrap();
+    with_body("centre", &body, |k, b| {
+        let (v, far, far_was) = spread_corner(k, b, true)?;
+        let before = tolerance_state(b);
+        super::boolean::centre_wide_vertices(k, b)?;
+        assert_eq!(tolerance_state(b), before);
+        assert_eq!(b.vertex(far)?.tolerance.to_bits(), far_was.to_bits());
+        for vu in vertex::vertexuses(b, v)? {
+            let cached = vertexuse::vertex_edge_gap(k, b, vu, false)?.map(|g| g.gap_3d.to_bits());
+            let fresh = vertexuse::vertex_edge_gap(k, b, vu, true)?.map(|g| g.gap_3d.to_bits());
+            assert_eq!(cached, fresh, "a stale vertex/edge gap");
+            let cached = vertexuse::vertex_face_gap(k, b, vu, false)?.map(|g| g.gap_3d.to_bits());
+            let fresh = vertexuse::vertex_face_gap(k, b, vu, true)?.map(|g| g.gap_3d.to_bits());
+            assert_eq!(cached, fresh, "a stale vertex/face gap");
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// `Test #82` refuses a vertex tolerance equal to its limit, not only one over it: just under
+/// the limit the check reports nothing, at it test 82 fails for that vertex.
+#[test]
+fn the_check_refuses_a_vertex_tolerance_at_the_limit() {
+    use solidcore::topology::brep::validation::{CheckLevel, check_brep};
+
+    for (factor, refused) in [(0.999_999, false), (1.0, true)] {
+        let body = make_box([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).unwrap();
+        with_body("check", &body, |k, b| {
+            let (v, _, limit) = corner_and_limit(b);
+            b.vertex_mut(v)?.tolerance = factor * limit;
+            let c = check_brep(k, b, CheckLevel::Level2)?;
+            let failed: Vec<u32> =
+                c.pointer_reports.reports().iter().chain(c.reports.reports()).filter(|r| !r.ok).map(|r| r.test_index as u32).collect();
+            assert_eq!(failed, if refused { vec![82] } else { vec![] }, "at {factor} of the limit");
+            Ok(())
+        })
+        .unwrap();
+    }
+}
+
+/// So the pass treats the limit itself as outside: a vertex at it is centred to a tolerance
+/// under it, and a move that would need exactly the limit is not kept.
+#[test]
+fn the_limit_itself_is_outside() {
+    let body = make_box([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).unwrap();
+    with_body("centre", &body, |k, b| {
+        let (v, corner, limit) = corner_and_limit(b);
+        b.vertex_mut(v)?.point = corner + Vec3::new(0.004, 0.0, 0.0);
+        b.vertex_mut(v)?.tolerance = limit;
+        super::boolean::centre_wide_vertices(k, b)?;
+        assert!(b.vertex(v)?.point.distance(corner) < 1e-9);
+        assert!(b.vertex(v)?.tolerance < limit, "{} at {limit}", b.vertex(v)?.tolerance);
+        Ok(())
+    })
+    .unwrap();
+    let body = make_box([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).unwrap();
+    with_body("centre", &body, |k, b| {
+        let (v, corner, limit) = corner_and_limit(b);
+        b.vertex_mut(v)?.point = corner + Vec3::new(0.004, 0.0, 0.0);
+        b.vertex_mut(v)?.tolerance = 5.0 * limit;
+        let e = solidcore::topology::vertex::edges(b, v, None)?[0];
+        b.edge_mut(e)?.tolerance = limit;
+        let before = tolerance_state(b);
+        super::boolean::centre_wide_vertices(k, b)?;
+        assert_eq!(tolerance_state(b), before);
+        Ok(())
+    })
+    .unwrap();
+}

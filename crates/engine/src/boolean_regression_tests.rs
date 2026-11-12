@@ -84,10 +84,11 @@ fn pocket_grazing_a_slanted_face_is_cut() {
     assert!(b.body.validity().is_empty(), "{:?}", b.body.validity());
     assert_eq!(b.body.shell_count(), 1);
     let v = volume(&s, "Stand Down - Middle");
-    assert!((v - POCKET_GRAZING_VOLUME).abs() < 1e-4 * POCKET_GRAZING_VOLUME, "{v}");
+    assert!((v - POCKET_GRAZING_VOLUME).abs() < 1e-5 * POCKET_GRAZING_VOLUME, "{v}");
 }
 
-/// The volume 0.30.1 gives the cut (`solidcraft-cli run`), which builds it.
+/// The volume 0.30.1 gives the cut (`solidcraft-cli run`), which builds it. Today's kernel gives
+/// 115_696.577 (5e-6 less); 1e-5 (1.2 mm³) still fails a sliver of 0.06 mm² of pocket section.
 const POCKET_GRAZING_VOLUME: f64 = 115_697.163_5;
 
 fn replay(script: &str) -> Session {

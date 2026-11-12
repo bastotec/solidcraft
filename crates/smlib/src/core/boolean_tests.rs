@@ -577,3 +577,75 @@ fn a_boolean_failure_from_another_operation_keeps_its_status() {
     assert!(matches!(status(geom(GeomFailure::CoincidentPoints)), Error::Status(0)));
     assert!(matches!(status(geom(GeomFailure::ToleranceTooSmall { tolerance: 0.0 })), Error::Status(1007)));
 }
+
+/// Every vertex's point and tolerance and every edge's tolerance, to compare bit for bit.
+fn tolerance_state(b: &solidcore::topology::Brep) -> Vec<u64> {
+    let mut s = Vec::new();
+    for &v in b.vertex_list() {
+        let r = b.vertex(v).unwrap();
+        s.extend([r.point.x, r.point.y, r.point.z, r.tolerance].map(f64::to_bits));
+    }
+    for &e in b.edge_list() {
+        s.push(b.edge(e).unwrap().tolerance.to_bits());
+    }
+    s
+}
+
+/// A box corner pushed 4 µm off its edges' ends with a tolerance past `Test #82`'s limit, as a
+/// grazing cut leaves one: `centre_wide_vertices` puts it back on the ends and sets a tolerance
+/// inside the limit that still covers every edge end there, 3D curve and UV trim.
+#[test]
+fn a_wide_vertex_is_centred_on_its_edges_ends() {
+    let body = make_box([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).unwrap();
+    with_body("centre", &body, |k, b| {
+        let limit = solidcore::geom::tol::LARGE_SMALL_SIZE_RATIO * b.tolerance();
+        let v = b.vertex_list()[0];
+        let corner = b.vertex(v)?.point;
+        b.vertex_mut(v)?.point = corner + Vec3::new(0.004, 0.0, 0.0);
+        b.vertex_mut(v)?.tolerance = 5.0 * limit;
+        super::boolean::centre_wide_vertices(k, b)?;
+        let r = b.vertex(v)?;
+        assert!(r.point.distance(corner) < 1e-9, "{:?} for {corner:?}", r.point);
+        assert!(r.tolerance <= limit, "{} > {limit}", r.tolerance);
+        for &w in b.vertex_list() {
+            assert!(b.vertex(w)?.tolerance <= limit);
+            assert!(super::boolean::ends_within(k, b, w)?, "an edge end outside vertex {w:?}");
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// The same corner with an edge already wider than the limit: no tolerance it could get would
+/// pass, so the vertex and every tolerance stay exactly as they were.
+#[test]
+fn a_vertex_whose_move_does_not_fit_is_left_as_it_was() {
+    let body = make_box([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).unwrap();
+    with_body("centre", &body, |k, b| {
+        let limit = solidcore::geom::tol::LARGE_SMALL_SIZE_RATIO * b.tolerance();
+        let v = b.vertex_list()[0];
+        let corner = b.vertex(v)?.point;
+        b.vertex_mut(v)?.point = corner + Vec3::new(0.004, 0.0, 0.0);
+        b.vertex_mut(v)?.tolerance = 5.0 * limit;
+        let e = solidcore::topology::vertex::edges(b, v, None)?[0];
+        b.edge_mut(e)?.tolerance = 2.0 * limit;
+        let before = tolerance_state(b);
+        super::boolean::centre_wide_vertices(k, b)?;
+        assert_eq!(tolerance_state(b), before);
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// A body whose vertices are all inside the limit is not touched.
+#[test]
+fn a_body_inside_the_limit_is_unchanged() {
+    let body = make_box([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).unwrap();
+    with_body("centre", &body, |k, b| {
+        let before = tolerance_state(b);
+        super::boolean::centre_wide_vertices(k, b)?;
+        assert_eq!(tolerance_state(b), before);
+        Ok(())
+    })
+    .unwrap();
+}

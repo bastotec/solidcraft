@@ -72,6 +72,24 @@ fn intersection_never_keeps_material_outside_the_trimming_cylinder() {
     }
 }
 
+/// A pocket whose outline starts on a slanted outer face and leaves it at a shallow angle: the
+/// cut put a vertex 0.0056 mm from one of its edges' ends, the tolerance update grew it to twice
+/// that, past the B-rep's 0.01 mm, and SMLib's check refused the cut (Test #82). The cut builds
+/// one closed body whose volume is the prism's less the pocket inside it.
+#[test]
+fn pocket_grazing_a_slanted_face_is_cut() {
+    let s = replay(include_str!("../../../examples/regressions/pocket_grazing_slanted_face.json"));
+    let state = s.model.state();
+    let b = state.body("Stand Down - Middle").expect("the body");
+    assert!(b.body.validity().is_empty(), "{:?}", b.body.validity());
+    assert_eq!(b.body.shell_count(), 1);
+    let v = volume(&s, "Stand Down - Middle");
+    assert!((v - POCKET_GRAZING_VOLUME).abs() < 1e-4 * POCKET_GRAZING_VOLUME, "{v}");
+}
+
+/// The volume 0.30.1 gives the cut (`solidcraft-cli run`), which builds it.
+const POCKET_GRAZING_VOLUME: f64 = 115_697.163_5;
+
 fn replay(script: &str) -> Session {
     let mut s = Session::default();
     let script: Value = serde_json::from_str(script).unwrap();

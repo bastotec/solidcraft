@@ -138,6 +138,88 @@ fn usable(call: &'static str, bodies: &[&Body]) -> Result<()> {
     Ok(())
 }
 
+/// Moves each vertex of `b` whose tolerance SMLib's check refuses (over
+/// [`LARGE_SMALL_SIZE_RATIO`] times the B-rep's, `Test #82`) to the centre of its edges' ends,
+/// where that brings its gaps inside the limit, and sets its tolerance to what they need.
+///
+/// The boolean grows a vertex's tolerance to twice its largest gap. A cut whose outline meets a
+/// face at a shallow angle places the vertex at one edge's end with the other edges' ends up to
+/// the whole gap away, so twice that gap can pass the limit although the edges end well inside
+/// it. Their centre halves the largest vertex/edge gap; the edges' ends stay apart by their
+/// spread, which the edges' tolerances are grown to cover. The move is kept only where the
+/// tolerances that needs, twice the vertex's new largest gap (vertex/face gaps included) and the
+/// spread, are inside the limit; the vertex's is never below its edges'.
+fn centre_wide_vertices(k: &mut Kernel, b: &mut Brep) -> SolidResult<()> {
+    use solidcore::Vec3;
+    use solidcore::geom::tol::{LARGE_SMALL_SIZE_RATIO, zone_tol3d};
+    use solidcore::heal::gap::Gap;
+    use solidcore::topology::{vertex, vertexuse};
+
+    let limit = LARGE_SMALL_SIZE_RATIO * b.tolerance();
+    for v in p1::vertices(b, None)? {
+        if b.vertex(v)?.tolerance <= limit {
+            continue;
+        }
+        let mut ends = Vec::new();
+        for vu in vertex::vertexuses(b, v)? {
+            if let Some(g) = vertexuse::vertex_edge_gap(k, b, vu, true)?
+                && let Ok((_, end)) = Gap::VertexEdge(g).gap_end_points(k, b)
+            {
+                ends.push(end);
+            }
+        }
+        let Some(&first) = ends.first() else { continue };
+        if ends.len() < 2 {
+            continue;
+        }
+        let (lo, hi) = ends.iter().fold((first, first), |(lo, hi), p| {
+            (Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)), Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z)))
+        });
+        // the edges' ends stay where they are: their spread is the gap between the edges, which
+        // the edges' tolerances must cover as well as the vertex's
+        let spread = zone_tol3d(k, lo.distance(hi));
+        let was = b.vertex(v)?.point;
+        b.vertex_mut(v)?.point = (lo + hi) / 2.0;
+        let gap = largest_gap(k, b, v)?;
+        let need = zone_tol3d(k, 2.0 * gap).max(spread);
+        let edges = vertex::edges(b, v, None)?;
+        let mut widest = b.tolerance();
+        for &e in &edges {
+            widest = widest.max(b.edge(e)?.tolerance);
+        }
+        if need.max(widest) <= limit {
+            for &e in &edges {
+                if b.edge(e)?.tolerance < spread {
+                    edge::set_tolerance(b, e, spread, true, true)?;
+                }
+            }
+            b.vertex_mut(v)?.tolerance = need.max(widest);
+            largest_gap(k, b, v)?;
+        } else {
+            b.vertex_mut(v)?.point = was;
+            largest_gap(k, b, v)?;
+        }
+    }
+    Ok(())
+}
+
+/// The largest vertex/edge or vertex/face gap of `v`'s uses, recomputed (their caches refreshed
+/// for where the vertex is now); 0 without gaps.
+fn largest_gap(k: &mut Kernel, b: &mut Brep, v: solidcore::topology::VertexId) -> SolidResult<f64> {
+    use solidcore::topology::{vertex, vertexuse};
+
+    let mut most = 0.0_f64;
+    for vu in vertex::vertexuses(b, v)? {
+        if let Some(g) = vertexuse::vertex_edge_gap(k, b, vu, true)? {
+            most = most.max(g.gap_3d);
+        }
+        if let Some(g) = vertexuse::vertex_face_gap(k, b, vu, true)? {
+            most = most.max(g.gap_3d);
+        }
+    }
+    Ok(most)
+}
+
 /// `smlib_boolean` (`smlib_boolean_with` with `SMLIB_RESULT_NONMANIFOLD`): `SmApiBoolean` on
 /// copies of `a` and `b`; `None` when the result is empty (`SMLIB_ERR_EMPTY`), and
 /// [`Error::NotSolid`] when solid operands give a body that is not closed.
@@ -150,6 +232,7 @@ pub(crate) fn boolean(a: &Body, b: &Body, op: BooleanOp) -> Result<Option<Body>>
         };
         let solid_in = p2::is_manifold_solid(&ca)? && p2::is_manifold_solid(&cb)?;
         let mut r = sm::boolean(k, ca, cb, operation(op))?;
+        centre_wide_vertices(k, &mut r.result)?;
         // Grow the result's tolerances to cover marginal edge/vertex, vertex/face and
         // edge/face gaps, so an otherwise-sound union is not refused as "Bad Gap" for a
         // sub-micron gap (SolidCraft issue #10, fuzzer seed 73). Tolerances only grow:

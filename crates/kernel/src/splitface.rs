@@ -56,18 +56,29 @@ enum Field {
     },
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The nearest-parameter searches [`Field::Surface`] has made on this thread (what a split by
+    /// a surface that is no plane or cylinder costs).
+    pub(crate) static SURFACE_SEARCHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 impl Field {
     fn eval(&self, p: Vec3) -> f64 {
         match self {
             Field::Plane { o, n } => (p - *o).dot(*n),
-            Field::Surface(s) => match s.search_nearest_parameter(p3(p), None, 50) {
-                Some((u, v)) => {
-                    let q = from_p3(s.subs(u, v));
-                    let n = s.normal(u, v);
-                    (p - q).dot(Vec3::new(n.x, n.y, n.z))
+            Field::Surface(s) => {
+                #[cfg(test)]
+                SURFACE_SEARCHES.with(|n| n.set(n.get() + 1));
+                match s.search_nearest_parameter(p3(p), None, 50) {
+                    Some((u, v)) => {
+                        let q = from_p3(s.subs(u, v));
+                        let n = s.normal(u, v);
+                        (p - q).dot(Vec3::new(n.x, n.y, n.z))
+                    }
+                    None => f64::NAN,
                 }
-                None => f64::NAN,
-            },
+            }
             Field::Cylinder { o, axis, r, out } => {
                 let v = p - *o;
                 let radial = v - *axis * v.dot(*axis);
@@ -968,6 +979,53 @@ fn surface_field(s: &mt::Surface) -> Field {
     Field::Surface(s.clone())
 }
 
+/// The circular cylinder a surface of revolution is when its profile is a line along its axis
+/// and it is placed without distortion (moved, turned, mirrored, scaled evenly): read from what
+/// the surface is made of, not sampled. A split by such a face then tells sides by the distance
+/// to its axis, not by a nearest-point search for every point asked. For a tool's field only:
+/// [`surface_field`], and so offsetting, sees a surface of revolution as before.
+fn revolved_cylinder(s: &mt::Surface) -> Option<Field> {
+    let mt::Surface::RevolutedCurve(processor) = s else { return None };
+    let revolution = processor.entity();
+    let mt::Curve::Line(line) = revolution.entity_curve() else { return None };
+    let (o, a) = (revolution.origin(), revolution.axis());
+    let (o, a) = (Vec3::new(o.x, o.y, o.z), Vec3::new(a.x, a.y, a.z).normalized()?);
+    let (p0, p1) = (from_p3(line.0), from_p3(line.1));
+    let (profile, foot) = (p1 - p0, p0 - o);
+    let (len, r) = (profile.len(), (foot - a * foot.dot(a)).len());
+    // A profile across the axis turns a cone or a disc; one on the axis turns nothing.
+    if !(len.is_finite() && r.is_finite() && len > 0.0 && r > 1e-9 * (r + len)) || a.cross(profile).len() > 1e-9 * len {
+        return None;
+    }
+    // The placement: a turn, a mirror and one scale, then a move. Anything else (a stretch, a
+    // shear, a projection) makes the circle an ellipse.
+    let t = processor.transform();
+    if [t.x.w, t.y.w, t.z.w, t.w.w - 1.0].iter().any(|w| !(w.abs() < 1e-12)) {
+        return None;
+    }
+    let cols = [Vec3::new(t.x.x, t.x.y, t.x.z), Vec3::new(t.y.x, t.y.y, t.y.z), Vec3::new(t.z.x, t.z.y, t.z.z)];
+    let [c0, c1, c2] = cols;
+    let k2 = c0.dot(c0);
+    if !(k2.is_finite() && k2 > 0.0) || [c1.dot(c1) - k2, c2.dot(c2) - k2, c0.dot(c1), c0.dot(c2), c1.dot(c2)].iter().any(|e| !(e.abs() <= 1e-9 * k2))
+    {
+        return None;
+    }
+    let placed = |v: Vec3| c0 * v.x + c1 * v.y + c2 * v.z;
+    let centre = placed(o) + Vec3::new(t.w.x, t.w.y, t.w.z);
+    let axis = placed(a).unit()?;
+    let r = r * k2.sqrt();
+    // Which way the face looks, from its own normal.
+    let ((u0, u1), (v0, v1)) = s.try_range_tuple().0.zip(s.try_range_tuple().1)?;
+    let (u, v) = (0.5 * (u0 + u1), 0.5 * (v0 + v1));
+    let (at, n) = (from_p3(s.subs(u, v)) - centre, s.normal(u, v));
+    let radial = (at - axis * at.dot(axis)).normalized()?;
+    let facing = Vec3::new(n.x, n.y, n.z).dot(radial);
+    if !(facing.abs() > 0.5) {
+        return None;
+    }
+    Some(Field::Cylinder { o: centre, axis, r, out: facing.signum() })
+}
+
 /// A plane or circular cylinder behind a surface (for offsetting).
 pub(crate) enum Analytic {
     Plane { n: Vec3 },
@@ -1018,7 +1076,8 @@ fn fields(tool: &SplitTool) -> Result<Vec<Field>> {
         SplitTool::Face { body: other, face } => {
             other.require_brep("a split tool")?;
             let f = other.solid.face_iter().nth(*face).ok_or_else(|| KernelError::Invalid(format!("the tool body has no face {face}")))?;
-            vec![surface_field(&f.oriented_surface())]
+            let s = f.oriented_surface();
+            vec![revolved_cylinder(&s).unwrap_or_else(|| surface_field(&s))]
         }
         SplitTool::Curves { plane, curves, along } => {
             let n = plane.normal();
@@ -1700,5 +1759,180 @@ mod tests {
         let pl = Plane::new(Vec3::new(50.0, 0.0, 0.0), Vec3::Y, Vec3::Z).unwrap();
         assert!(split_faces(&b, &[0], &SplitTool::Plane(pl)).is_err());
         assert!(split_faces(&b, &[99], &SplitTool::Plane(Plane::XY)).is_err());
+    }
+}
+
+/// A face of revolution as a split tool: the circular cylinders among them (a straight profile
+/// parallel to the axis) answer in closed form, every other one by searching its surface.
+#[cfg(test)]
+mod tool_field_tests {
+    use std::f64::consts::TAU;
+
+    use solidcraft_geom::{Loop2, Region2};
+
+    use super::*;
+    use crate::{cylinder, revolve, sphere, torus, transform, transform_matrix};
+
+    /// How far off the surface the fields are compared, along its normal.
+    const OFFSETS: [f64; 5] = [-0.75, -0.25, 0.0, 0.25, 0.75];
+
+    /// What `f` gives, and how many nearest-parameter searches it made.
+    fn searches<T>(f: impl FnOnce() -> T) -> (T, u64) {
+        let before = SURFACE_SEARCHES.with(std::cell::Cell::get);
+        let t = f();
+        (t, SURFACE_SEARCHES.with(std::cell::Cell::get) - before)
+    }
+
+    /// A polygon of (radius, height) turned a full turn about the z axis.
+    fn turned(pts: &[(f64, f64)]) -> Body {
+        let plane = Plane::new(Vec3::ZERO, Vec3::X, Vec3::Z).unwrap();
+        let outer = Loop2::polygon(&pts.iter().map(|(r, h)| Vec2::new(*r, *h)).collect::<Vec<_>>());
+        revolve(&plane, &[Region2 { outer, holes: vec![] }], Vec2::ZERO, Vec2::Y, TAU).unwrap().pop().unwrap()
+    }
+
+    /// A tube about z: a bore of radius 2 (its normal towards the axis) in a wall of radius 3.
+    fn tube() -> Body {
+        turned(&[(2.0, 0.0), (3.0, 0.0), (3.0, 10.0), (2.0, 10.0)])
+    }
+
+    /// Points on a surface with its normal there, spread over its parameters.
+    fn probes(s: &mt::Surface) -> Vec<(Vec3, Vec3)> {
+        let (Some((u0, u1)), Some((v0, v1))) = s.try_range_tuple() else { return Vec::new() };
+        let mut out = Vec::new();
+        for i in 1..6 {
+            for j in 1..8 {
+                let (u, v) = (u0 + (u1 - u0) * f64::from(i) / 6.0, v0 + (v1 - v0) * (f64::from(j) - 0.37) / 8.0);
+                let n = s.normal(u, v);
+                out.push((from_p3(s.subs(u, v)), Vec3::new(n.x, n.y, n.z)));
+            }
+        }
+        out
+    }
+
+    /// The faces of `b` that are not flat, with their surfaces.
+    fn curved(b: &Body) -> Vec<(usize, mt::Surface)> {
+        let all = b.solid.face_iter().map(|f| f.oriented_surface()).enumerate();
+        all.filter(|(_, s)| probes(s).windows(2).any(|w| w[0].1.cross(w[1].1).len() > 1e-9)).collect()
+    }
+
+    /// A field against the search of `s`: the signed distance along the normal, as the search
+    /// gives it (to `tol`), and without searching. How many points the search answered.
+    fn assert_as_searched(field: &Field, s: &mt::Surface, tol: f64, what: &str) {
+        let numeric = Field::Surface(s.clone());
+        let (mut asked, mut compared) = (0, 0);
+        for (on, n) in probes(s) {
+            for d in OFFSETS {
+                let at = on + n * d;
+                let (got, made) = searches(|| field.eval(at));
+                assert_eq!(made, 0, "{what}: searched at {at:?}");
+                assert!((got - d).abs() < 1e-9, "{what}: {got} at {d} off the surface ({at:?})");
+                let want = numeric.eval(at);
+                asked += 1;
+                if want.is_finite() {
+                    assert!((got - want).abs() <= tol, "{what}: {got}, the search gives {want} at {at:?}");
+                    compared += 1;
+                }
+            }
+        }
+        assert!(asked == 175 && compared * 10 >= asked * 9, "{what}: the search answered {compared} of {asked}");
+    }
+
+    /// Every curved face of `b` splits as a circular cylinder of one of `radii`: its axis, radius
+    /// and whether its normal points away from the axis.
+    fn assert_cylinders(b: &Body, radii: &[f64]) -> Vec<(Vec3, f64, f64)> {
+        let faces = curved(b);
+        assert!(!faces.is_empty(), "no curved face");
+        let tol = b.size() * 1e-7;
+        let mut seen = Vec::new();
+        for (face, s) in faces {
+            assert!(matches!(s, mt::Surface::RevolutedCurve(_)), "SETUP: face {face} is not a surface of revolution");
+            let side = ToolSide::of(&SplitTool::Face { body: b, face }).unwrap();
+            let Field::Cylinder { axis, r, out, .. } = &side.0 else { panic!("face {face}: the tool searches its surface, it is a cylinder") };
+            assert!(radii.iter().any(|x| (x - r).abs() <= tol), "face {face}: radius {r}");
+            assert_as_searched(&side.0, &s, tol, &format!("face {face}"));
+            seen.push((axis.vec(), *r, *out));
+        }
+        for want in radii {
+            assert!(seen.iter().any(|(_, r, _)| (r - want).abs() <= tol), "SETUP: no face of radius {want}: {seen:?}");
+        }
+        seen
+    }
+
+    /// Every curved face of `b` splits by searching its surface (it is no circular cylinder).
+    fn assert_searched(b: &Body) {
+        let faces = curved(b);
+        assert!(!faces.is_empty(), "SETUP: no curved face");
+        for (face, s) in faces {
+            let side = ToolSide::of(&SplitTool::Face { body: b, face }).unwrap();
+            assert!(matches!(side.0, Field::Surface(_)), "face {face}: split as a plane or a cylinder, which it is not");
+            let (on, n) = probes(&s)[17];
+            let (v, made) = searches(|| side.at(on + n * 0.25));
+            assert!(made > 0 && (v - 0.25).abs() < 1e-6, "face {face}: {v} after {made} searches");
+        }
+    }
+
+    #[test]
+    fn a_revolved_cylinder_splits_without_searching() {
+        let seen = assert_cylinders(&tube(), &[2.0, 3.0]);
+        for (axis, r, out) in seen {
+            assert!(axis.cross(Vec3::Z).len() < 1e-9, "{axis:?}");
+            // The bore's normal points at the axis, the wall's away from it.
+            assert_eq!(out, if r < 2.5 { -1.0 } else { 1.0 }, "radius {r}");
+        }
+    }
+
+    #[test]
+    fn a_moved_revolved_cylinder_splits_without_searching() {
+        let moved = transform(&tube(), Vec3::new(7.0, -3.0, 2.0), Vec3::new(1.0, 2.0, 3.0), Vec3::new(1.0, 1.0, 0.0), 0.7).unwrap();
+        for (axis, r, out) in assert_cylinders(&moved, &[2.0, 3.0]) {
+            assert!(axis.cross(Vec3::Z).len() > 0.1, "{axis:?}");
+            assert_eq!(out, if r < 2.5 { -1.0 } else { 1.0 }, "radius {r}");
+        }
+    }
+
+    #[test]
+    fn a_mirrored_revolved_cylinder_splits_without_searching() {
+        let mirrored = transform_matrix(&tube(), [[-1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [5.0, 0.0, 0.0, 1.0]]).unwrap();
+        for (_, r, out) in assert_cylinders(&mirrored, &[2.0, 3.0]) {
+            assert_eq!(out, if r < 2.5 { -1.0 } else { 1.0 }, "radius {r}");
+        }
+    }
+
+    #[test]
+    fn a_scaled_revolved_cylinder_splits_without_searching() {
+        let scaled = transform_matrix(&tube(), [[2.0, 0.0, 0.0, 0.0], [0.0, 2.0, 0.0, 0.0], [0.0, 0.0, 2.0, 0.0], [0.0, 0.0, 0.0, 1.0]]).unwrap();
+        assert_cylinders(&scaled, &[4.0, 6.0]);
+    }
+
+    /// Stretched across its axis a cylinder is elliptic: no circular cylinder.
+    #[test]
+    fn a_stretched_revolved_cylinder_is_searched() {
+        let stretched = transform_matrix(&tube(), [[1.0, 0.0, 0.0, 0.0], [0.0, 2.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]).unwrap();
+        assert_searched(&stretched);
+    }
+
+    #[test]
+    fn other_surfaces_of_revolution_are_searched() {
+        // Cones, and walls a thousandth out of parallel with the axis.
+        assert_searched(&turned(&[(1.0, 0.0), (3.0, 0.0), (2.0, 10.0), (0.5, 10.0)]));
+        assert_searched(&turned(&[(2.0, 0.0), (3.0, 0.0), (3.001, 10.0), (2.001, 10.0)]));
+        assert_searched(&torus(Vec3::new(1.0, 2.0, 3.0), 10.0, 3.0).unwrap());
+        assert_searched(&sphere(Vec3::new(1.0, 2.0, 3.0), 5.0).unwrap());
+    }
+
+    /// Offsetting asks [`analytic_field`], which answers for a revolved cylinder as it did: it is
+    /// the split tool alone that knows it.
+    #[test]
+    fn offsetting_sees_a_revolved_cylinder_as_before() {
+        let b = tube();
+        for (face, s) in curved(&b) {
+            assert!(matches!(surface_field(&s), Field::Surface(_)), "face {face}");
+            assert!(analytic_field(&s).is_none(), "face {face}");
+            assert!(crate::surfaces::Offset::of(b.solid.face_iter().nth(face).unwrap()).is_none(), "face {face}");
+        }
+        let c = cylinder(Vec3::ZERO, Vec3::Z, 4.0, 10.0).unwrap();
+        for (face, s) in curved(&c) {
+            assert!(matches!(analytic_field(&s), Some(Analytic::Cylinder { r, .. }) if (r - 4.0).abs() < 1e-6), "face {face}");
+        }
     }
 }

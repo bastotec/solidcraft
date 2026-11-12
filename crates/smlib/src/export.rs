@@ -492,6 +492,9 @@ fn curves(flat: View, n_edges: usize) -> Res<(Vec<(b::Curve, Option<b::Curve>, [
                 // on it are that NURBS's, so the trims carry over as they are.
                 if forms.get(e) == Some(&1) {
                     let form = next_nurbs()?.record();
+                    // Its range is on the form's knots, and may end a rounding past them as a
+                    // NURBS edge's does (an R3.7 round left one 2.2e-16 past).
+                    let r = onto(r, form.natural());
                     (b::Curve::Circle { frame: along(f, &form, r)?, radius }, Some(form), r, Some([1.0, 0.0]))
                 } else {
                     (b::Curve::Circle { frame: f, radius }, None, r, None)
@@ -508,6 +511,7 @@ fn curves(flat: View, n_edges: usize) -> Res<(Vec<(b::Curve, Option<b::Curve>, [
                 // Like a circle: on its NURBS form, the trims on it carry over as they are.
                 if forms.get(e) == Some(&1) {
                     let form = next_nurbs()?.record();
+                    let r = onto(r, form.natural());
                     (b::Curve::Ellipse { frame: along(f, &form, r)?, radii }, Some(form), r, Some([1.0, 0.0]))
                 } else {
                     (b::Curve::Ellipse { frame: f, radii }, None, r, None)
@@ -668,7 +672,8 @@ fn mapped(trim: &b::Curve2, same: bool, [scale, offset]: [f64; 2], [t0, t1]: [f6
 }
 
 /// A domain side or an edge's interval moved onto the natural range where it overshoots it by
-/// rounding (a sphere's latitudes, a cone's apex, a NURBS edge's end knots).
+/// rounding (a sphere's latitudes, a cone's apex, the end knots of a NURBS edge or of a circle's
+/// or ellipse's NURBS form).
 fn onto(r: [f64; 2], natural: b::Natural) -> [f64; 2] {
     match natural {
         b::Natural::Range(lo, hi) => {

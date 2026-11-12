@@ -582,9 +582,13 @@ pub(crate) fn split_edges_at(body: &Body, points: &[Vec3]) -> Result<Body> {
         let mut cuts: Vec<(mt::Edge, (mt::Edge, mt::Edge))> = Vec::new();
         let mut rec = Rebuild::default();
         // Each current piece and the body edge it is a piece of.
+        // A solid's edge iterator gives each edge once per face that runs it: taken twice, the
+        // second cut of an edge would land on the uncut twin and be lost when the faces are rebuilt.
+        let mut seen = std::collections::HashSet::new();
         let mut current: Vec<(mt::Edge, mt::Edge)> = body
             .solid
             .edge_iter()
+            .filter(|e| seen.insert(e.id()))
             .map(|e| {
                 let abs = if e.orientation() { e.clone() } else { e.inverse() };
                 (abs.clone(), abs)

@@ -33,6 +33,8 @@ mod candidate_reach;
 mod chamfer_sides_curved_tests;
 mod clearance;
 mod coaxial_overlap;
+#[cfg(test)]
+mod contact_union_tests;
 mod continuity;
 mod coplanar;
 mod corner_g2;

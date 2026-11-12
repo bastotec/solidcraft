@@ -335,6 +335,53 @@ mod native_tests {
         );
     }
 
+    /// An arc edge on its NURBS form (a round's end on a box) whose range SMLib gave one rounding
+    /// past the form's last knot, as an R3.7 round had it (2.2e-16 on
+    /// 0.2638): the record's interval is the form's own and validates; farther past stays an error.
+    #[test]
+    fn a_circle_edge_range_a_rounding_past_its_form_is_moved_onto_it() {
+        let block = Brep::make_box([0.0; 3], [60.0, 40.0, 20.0]).unwrap();
+        let rounded = block.fillet(&[[60.0, 40.0, 10.0]], 0.1, 5.0).unwrap();
+        let arrays = rounded.arrays().unwrap();
+        let kinds = arrays.ints.get(&EDGE_CURVE_TYPE).cloned().unwrap_or_default();
+        let counts = arrays.ints.get(&EDGE_NURBS_VERTEX_COUNT).cloned().unwrap_or_default();
+        let orders = arrays.ints.get(&EDGE_NURBS_ORDER).cloned().unwrap_or_default();
+        let forms = arrays.ints.get(&EDGE_NURBS_FORM).cloned().unwrap_or_default();
+        let knots = arrays.reals.get(&EDGE_NURBS_KNOTS).cloned().unwrap_or_default();
+        let range = arrays.reals.get(&EDGE_RANGE).cloned().unwrap_or_default();
+        let (mut at, mut block_of) = (0usize, Vec::new());
+        for (n, o) in counts.iter().zip(&orders) {
+            let (n, o) = (*n as usize, *o as usize);
+            block_of.push(knots[at + n]);
+            at += n + o;
+        }
+        // A circle on its form whose range ends exactly on the form's last knot: (edge, slot, knot).
+        let (mut nurbs, mut found) = (0usize, None);
+        for (e, kind) in kinds.iter().enumerate() {
+            let has_block = *kind == CURVE_NURBS || forms.get(e) == Some(&1);
+            if *kind == CURVE_CIRCLE && forms.get(e) == Some(&1) && found.is_none() {
+                let last = block_of[nurbs];
+                found = [2 * e, 2 * e + 1].into_iter().find(|&i| range[i] == last).map(|i| (i, last));
+            }
+            nurbs += usize::from(has_block);
+        }
+        let (slot, last) = found.expect("an arc of the round on its NURBS form, ending on its last knot");
+        let shifted = |to: f64| {
+            let mut a = arrays.clone();
+            a.reals.get_mut(&EDGE_RANGE).unwrap()[slot] = to;
+            a
+        };
+        let past = f64::from_bits(last.to_bits() + 1);
+        assert!(past > last);
+        let (record, _) = native(&shifted(past)).unwrap();
+        solidcore_ops::record_check::validate(&record).unwrap();
+        assert!(record.edges.iter().any(|x| x.nurbs.is_some() && x.interval[1] == last), "an arc interval on its form's last knot");
+        assert!(
+            native(&shifted(last + 1e-3)).map(|(r, _)| solidcore_ops::record_check::validate(&r)).map_or(true, |v| v.is_err()),
+            "a real overshoot is not moved"
+        );
+    }
+
     /// [`outer_area`] as it was: every edge of the body copied into a record for each face.
     #[allow(clippy::unwrap_used)] // test reference
     fn outer_area_copying_every_edge(face: &Face, edges: &[Edge], tolerance: f64) -> Res<f64> {

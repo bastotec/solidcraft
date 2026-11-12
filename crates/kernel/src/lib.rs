@@ -27,6 +27,8 @@ mod bridge;
 mod build;
 #[cfg(test)]
 mod chamfer_sides_curved_tests;
+#[cfg(test)]
+mod contact_union_tests;
 mod continuity;
 mod continuity_order;
 #[cfg(test)]

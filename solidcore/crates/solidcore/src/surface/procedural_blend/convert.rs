@@ -634,11 +634,16 @@ const OP_ADOPT: &str = "surface::procedural_blend::convert::adopt_definitions";
 /// round whose net is an analytic surface (a plane, cylinder, cone, sphere or torus) or a ball
 /// patch keeps that label in the record, and its definition is not written; nor is a definition
 /// whose supports a record cannot hold (`Unsupported`, [`to_record`]), which then goes as its
-/// net. `None` for any other surface.
+/// net. Nor is an exact round's definition its own record does not rebuild and certify
+/// ([`exact_rebuild`], as [`adopt_definitions`] does on reading it): reading the record would
+/// refuse the whole body (a support whose label does not stand on its form, as a round of a
+/// shallow corner can be, #3185's bound), so the face goes as its net. `None` for any other
+/// surface.
 ///
 /// # Errors
 ///
-/// Those of [`to_record`] and [`exact_to_record`] other than `Unsupported`.
+/// Those of [`to_record`] and [`exact_to_record`] other than `Unsupported`; a cancel during the
+/// rebuild, as it is.
 pub fn face_definition(k: &Kernel, surface: &Surface) -> Result<Option<FaceDefinition>> {
     let unrecorded = |e: SolidError| match e {
         SolidError::Unsupported { .. } => Ok(None),
@@ -663,6 +668,13 @@ pub fn face_definition(k: &Kernel, surface: &Surface) -> Result<Option<FaceDefin
         Ok(rec) => rec,
         Err(e) => return unrecorded(e),
     };
+    // a definition is written only where the record reads back: the reader rebuilds it and
+    // certifies its net, and refuses the body otherwise
+    match exact_rebuild(k, &rec) {
+        Ok(_) => {}
+        Err(e) if e.is_cancelled() => return Err(e),
+        Err(_) => return Ok(None),
+    }
     Ok(Some(FaceDefinition::ExactRound(Box::new(
         ExactRoundDefinition {
             class: rec.class,

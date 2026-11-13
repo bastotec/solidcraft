@@ -71,3 +71,34 @@ fn a_round_over_a_shallow_round_reads_back_and_operates() {
         assert!((after.volume - expected).abs() <= 1e-6 * expected, "slant {slant}: a bore cut through it, {} vs {expected}", after.volume);
     }
 }
+
+/// The faces of `body`'s record that keep an exact round's definition, and those written as a
+/// bare NURBS net.
+fn written(body: &Body) -> (usize, usize) {
+    use solidcore_record::brep::{Surface, blend::BlendDefinition};
+    let rec = brep_record(body).unwrap();
+    let mut exact = 0;
+    let mut net = 0;
+    for f in &rec.faces {
+        match &f.surface {
+            Surface::Blend { definition } if matches!(**definition, BlendDefinition::ExactRound(_)) => exact += 1,
+            Surface::Spline { .. } | Surface::RationalSpline { .. } => net += 1,
+            _ => {}
+        }
+    }
+    (exact, net)
+}
+
+/// What the writer keeps: over the corner turned by 9.1 degrees one of the four exact rounds
+/// does not rebuild from its record, so it is written as its net and the other three keep their
+/// definitions; over the corner turned by 17.7 all four rebuild and all four keep them. Before,
+/// all four were written at 9.1 degrees and the record did not read back.
+#[test]
+fn only_the_round_that_does_not_rebuild_is_written_as_its_net() {
+    let shallow = rounded(8.0);
+    assert_eq!(written(&shallow), (3, 1), "slant 8: three definitions kept, one face as its net");
+    smlib_body(&shallow).unwrap();
+    let steeper = rounded(16.0);
+    assert_eq!(written(&steeper), (4, 0), "slant 16: every definition kept");
+    smlib_body(&steeper).unwrap();
+}

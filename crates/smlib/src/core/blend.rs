@@ -55,7 +55,7 @@ use solidcore::topology::face::p4 as face_p4;
 use solidcore::topology::topology_traverser::Marks;
 use solidcore::topology::{Brep, EdgeId, EdgeuseId, FaceId, FaceuseId, VertexId, edge, vertex};
 
-use solidcore_ops::blend::{Refusal, SessionCall, SessionRefusal};
+use solidcore_ops::blend::{Refusal, SessionCall, SessionRefusal, equal_smooth_pairs};
 
 use super::{Body, answer};
 use crate::{Blend, ChamferSecond, Error, Hole, HoleEdge, MAX_POINTS, Result, Turn};
@@ -686,7 +686,13 @@ fn overflow_first(
     }
     // A round mitred to one that goes first goes with it, through every mitre.
     let place = |e: &EdgeId| picked.iter().position(|p| p == e);
-    let pairs: Vec<(usize, usize)> = mitred.as_chunks::<2>().0.iter().filter_map(|[a, b]| Some((place(a)?, place(b)?))).collect();
+    let mut pairs: Vec<(usize, usize)> = mitred.as_chunks::<2>().0.iter().filter_map(|[a, b]| Some((place(a)?, place(b)?))).collect();
+    // Equal rounds on a smooth picked chain must stay in one pass. Splitting off an
+    // overflowing straight edge otherwise consumes the end of its corner arc before
+    // the latter can build the spherical continuation of the round.
+    if matches!(section, Section::Round(_)) {
+        pairs.extend(equal_smooth_pairs(k, &fresh, &again, each)?);
+    }
     let mut grew = true;
     while grew {
         grew = false;

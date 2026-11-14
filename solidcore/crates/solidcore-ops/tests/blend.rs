@@ -1434,3 +1434,74 @@ fn a_kernel_unsupported_after_a_no_room_note_is_its_own_cause() {
         );
     }
 }
+
+/// Overflow grouping is limited to picked, exactly equal-sized, adjacent G1 edges.
+#[test]
+fn equal_smooth_pairs_only_group_equal_adjacent_picks() {
+    use solidcore_ops::blend::equal_smooth_pairs;
+    let b = slot();
+    let (k, raw) = kernel_copy(&b);
+    let at = |p| raw.edge_list()[edge_at(&b, p)];
+    let front = at([5.0, 0.0, 2.0]);
+    let end = at([12.0, 2.0, 2.0]);
+    let back = at([5.0, 4.0, 2.0]);
+    assert_eq!(
+        equal_smooth_pairs(&k, &raw, &[front, end], &[6.0, 6.0]).unwrap(),
+        vec![(0, 1)]
+    );
+    // Even one ULP is a different requested size, not a tolerance-based match.
+    let next = f64::from_bits(6.0_f64.to_bits() + 1);
+    assert!(equal_smooth_pairs(&k, &raw, &[front, end], &[6.0, next])
+        .unwrap()
+        .is_empty());
+    // Both parallel straights belong to the same smooth outline, but the unpicked
+    // semicircles must not bridge them (and they share no vertex).
+    assert!(equal_smooth_pairs(&k, &raw, &[front, back], &[6.0, 6.0])
+        .unwrap()
+        .is_empty());
+    assert!(equal_smooth_pairs(&k, &raw, &[front], &[6.0])
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        equal_smooth_pairs(&k, &raw, &[front, end, back], &[6.0; 3]).unwrap(),
+        vec![(0, 1), (1, 2)]
+    );
+    assert!(matches!(
+        equal_smooth_pairs(&k, &raw, &[front, end], &[6.0]),
+        Err(solidcore::SolidError::InvalidInput { .. })
+    ));
+    let b = block();
+    let (k, raw) = kernel_copy(&b);
+    let sharp = [[15.0, 0.0, 10.0], [30.0, 10.0, 10.0]].map(|p| raw.edge_list()[edge_at(&b, p)]);
+    assert!(equal_smooth_pairs(&k, &raw, &sharp, &[6.0, 6.0])
+        .unwrap()
+        .is_empty());
+}
+
+/// The construction-exact angular policy is much stricter than tangent-chain traversal.
+#[test]
+fn equal_smooth_pairs_straddle_the_strict_angular_policy() {
+    use solidcore_ops::blend::equal_smooth_pairs;
+    for (angle_deg, joins) in [(0.5e-5_f64, true), (2e-5_f64, false)] {
+        let dy = 1000.0 * angle_deg.to_radians().tan();
+        let b = swept(
+            &[
+                segment((0.0, 0.0), (1000.0, 0.0)),
+                segment((1000.0, 0.0), (2000.0, dy)),
+                segment((2000.0, dy), (2000.0, 100.0)),
+                segment((2000.0, 100.0), (0.0, 100.0)),
+                segment((0.0, 100.0), (0.0, 0.0)),
+            ],
+            2.0,
+        );
+        let (k, raw) = kernel_copy(&b);
+        let edges =
+            [[500.0, 0.0, 2.0], [1500.0, dy / 2.0, 2.0]].map(|p| raw.edge_list()[edge_at(&b, p)]);
+        let pairs = equal_smooth_pairs(&k, &raw, &edges, &[6.0, 6.0]).unwrap();
+        assert_eq!(
+            pairs,
+            if joins { vec![(0, 1)] } else { vec![] },
+            "angle {angle_deg} degrees"
+        );
+    }
+}

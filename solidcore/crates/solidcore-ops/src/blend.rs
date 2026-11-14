@@ -11,6 +11,8 @@
 //! - [`fillet_variable`]: one edge rounded with a radius law.
 //! - [`edge_faces_along`]: the two faces of an edge with how far each faces a direction, for an
 //!   application choosing the face a chamfer's first distance is along.
+//! - [`equal_smooth_pairs`]: equally sized picked edges joined with construction-exact
+//!   end tangency, kept together by overflow-first dispatch without adding unpicked edges.
 //! - [`tangent_chain`]: the edges a blend of some edges runs on into tangentially, on the
 //!   kernel's measures.
 //!
@@ -60,6 +62,58 @@ use crate::{Error, FitKind, Result, RoomReason, Unblendable};
 
 mod room;
 pub use room::{band_room, BandRoom, EndRoom, Room};
+
+/// Angular policy for construction-exact continuity in overflow grouping, in degrees.
+/// This admits numerical noise at constructed tangent joins, not the broader near-tangent
+/// traversal accepted by `tangent_chain`; widening it would couple distinct round requests.
+const CONSTRUCTION_EXACT_TANGENCY_DEG: f64 = 1e-5;
+
+/// Pairs of equally sized picked edges whose end tangents are parallel at a shared
+/// vertex. Used by overflow-first dispatch to keep smooth round chains in one pass;
+/// it neither adds unpicked edges nor groups different radii. Sizes must correspond
+/// one-for-one to `edges`; valid positive sizes match only with identical floating-point
+/// bits. End tangency uses the strict construction-exact policy (1e-5 degrees), not
+/// the broader tolerance of tangent-chain traversal.
+pub fn equal_smooth_pairs(
+    k: &Kernel,
+    body: &Brep,
+    edges: &[EdgeId],
+    sizes: &[f64],
+) -> solidcore::Result<Vec<(usize, usize)>> {
+    if edges.len() != sizes.len() {
+        return Err(SolidError::invalid_input(
+            "equal_smooth_pairs",
+            "one size is required per edge",
+        ));
+    }
+    let mut pairs = Vec::new();
+    for (a, (&edge_a, size_a)) in edges.iter().zip(sizes).enumerate() {
+        for (b, (&edge_b, size_b)) in edges.iter().zip(sizes).enumerate().skip(a + 1) {
+            if size_a.to_bits() != size_b.to_bits() {
+                continue;
+            }
+            let (v0, v1) = edge::start_end_vertices(body, edge_a)?;
+            let (w0, w1) = edge::start_end_vertices(body, edge_b)?;
+            for v in [v0, v1].into_iter().flatten() {
+                if (Some(v) == w0 || Some(v) == w1)
+                    && solidcore::blend::fillet_corner::p1::test_g1_continuity(
+                        k,
+                        body,
+                        Some(v),
+                        Some(edge_a),
+                        Some(edge_b),
+                        CONSTRUCTION_EXACT_TANGENCY_DEG,
+                    )?
+                    .0
+                {
+                    pairs.push((a, b));
+                    break;
+                }
+            }
+        }
+    }
+    Ok(pairs)
+}
 
 /// The largest size, setback or radius the operations take.
 pub const MAX_SIZE: f64 = 1e6;

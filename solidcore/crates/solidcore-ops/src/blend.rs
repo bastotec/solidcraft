@@ -61,6 +61,51 @@ use crate::{Error, FitKind, Result, RoomReason, Unblendable};
 mod room;
 pub use room::{band_room, BandRoom, EndRoom, Room};
 
+/// Pairs of equally sized picked edges whose end tangents are parallel at a shared
+/// vertex. Used by overflow-first dispatch to keep smooth round chains in one pass;
+/// it neither adds unpicked edges nor groups different radii. Sizes must correspond
+/// one-for-one to `edges`. The angular tolerance is 1e-5 degrees.
+pub fn equal_smooth_pairs(
+    k: &Kernel,
+    body: &Brep,
+    edges: &[EdgeId],
+    sizes: &[f64],
+) -> solidcore::Result<Vec<(usize, usize)>> {
+    if edges.len() != sizes.len() {
+        return Err(SolidError::invalid_input(
+            "equal_smooth_pairs",
+            "one size is required per edge",
+        ));
+    }
+    let mut pairs = Vec::new();
+    for a in 0..edges.len() {
+        for b in a + 1..edges.len() {
+            if sizes[a].to_bits() != sizes[b].to_bits() {
+                continue;
+            }
+            let (v0, v1) = edge::start_end_vertices(body, edges[a])?;
+            let (w0, w1) = edge::start_end_vertices(body, edges[b])?;
+            for v in [v0, v1].into_iter().flatten() {
+                if (Some(v) == w0 || Some(v) == w1)
+                    && solidcore::blend::fillet_corner::p1::test_g1_continuity(
+                        k,
+                        body,
+                        Some(v),
+                        Some(edges[a]),
+                        Some(edges[b]),
+                        1e-5,
+                    )?
+                    .0
+                {
+                    pairs.push((a, b));
+                    break;
+                }
+            }
+        }
+    }
+    Ok(pairs)
+}
+
 /// The largest size, setback or radius the operations take.
 pub const MAX_SIZE: f64 = 1e6;
 

@@ -2146,6 +2146,78 @@ impl FilletBrep {
             }
             self.fillet_vertexuse_mut(vu1)?.set_tsect_pnt(&tsect1);
 
+            // Not the fork's (RC-MM-F5): where the end face runs on smoothly past the side
+            // edge's far end (a flat continuing tangentially onto a curved face), a rail that
+            // meets the edge's line only past that end, or not at all, ends on the edge its
+            // face shares with the face the end face runs onto
+            // ([`crate::blend::blend_corner::end::side_edgeuse_across_smooth_end_face`]).
+            // Left on the line, its end lies inside its face: the imprint splits nothing and
+            // the trim of the original faces has no boundary on that side.
+            if !is_closed {
+                let far = if edge::start_vertex(target, side_edge)? == cp_vertex {
+                    edge::end_vertex(target, side_edge)?
+                } else if edge::end_vertex(target, side_edge)? == cp_vertex {
+                    edge::start_vertex(target, side_edge)?
+                } else {
+                    None
+                };
+                let (e0, e1) = (ivl.evaluate(0.0), ivl.evaluate(1.0));
+                let (lo, hi) = (e0.min(e1), e0.max(e1));
+                let slack = 1e-6 * (hi - lo).abs();
+                let at_end = far.is_some() && far == edge::end_vertex(target, side_edge)?;
+                let past = found
+                    && if at_end {
+                        edgeuse_parameter > hi + slack
+                    } else {
+                        edgeuse_parameter < lo - slack
+                    };
+                if past || !found {
+                    let tol_rad = corners.corner(corner)?.tangency_tol_radians;
+                    let next = match far {
+                        Some(far) => {
+                            crate::blend::blend_corner::end::side_edgeuse_across_smooth_end_face(
+                                k, target, side_eu1, far, tol_rad,
+                            )?
+                        }
+                        None => None,
+                    };
+                    // only where the end found on the edge's line still lies on the face
+                    let outward = match (next, far) {
+                        (Some(next), Some(far)) => {
+                            crate::blend::blend_corner::end::smooth_end_leans_outward(
+                                k, target, side_eu1, far, next,
+                            )?
+                        }
+                        _ => false,
+                    };
+                    if let (true, Some(next), Some(far)) = (outward, next, far) {
+                        if self.fillet_vertex(v)?.smooth_end_side.is_none() {
+                            self.fillet_vertex_mut(v)?.smooth_end_side = Some(side_eu1);
+                        }
+                        if depth >= crate::blend::blend_corner::end::SIDE_EDGE_CHAIN_STEPS {
+                            return Err(SolidError::blend_failed(
+                                OP,
+                                "the side edge chain is longer than its bound",
+                            ));
+                        }
+                        self.fillet_vertex_mut(v)?.set_point_class(
+                            crate::intersect::point_class::PointClassType::Edgeuse,
+                            Some(EntityRef::Edgeuse(next)),
+                        );
+                        return self.calc_rail_int_edgeuse_with_solvers(
+                            k,
+                            v,
+                            opt_fg,
+                            corners,
+                            solvers,
+                            target,
+                            Some(far),
+                            depth + 1,
+                        );
+                    }
+                }
+            }
+
             // SolidCraft change (the fork's 63c7962): a side edge
             // split only by a seam ending on it (a cylinder's seam on its rim) continues
             // across that vertex: the rail that runs past the edge's far end ends on the next

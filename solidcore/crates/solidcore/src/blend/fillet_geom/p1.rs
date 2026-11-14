@@ -848,6 +848,13 @@ pub struct FilletVertex {
     /// `m_bTangentEnd` (the fork's tangency-labs/smlib@856b54e, WR-600): a rail's tangent
     /// end, where it crosses a tangent seam into the end face.
     pub tangent_end: bool,
+    /// Not upstream (solidcore-native, RC-MM-F5): the side edge use this rail end was first
+    /// solved on, where the end face runs on smoothly past that edge's far end and the end
+    /// was solved on the edge beyond instead
+    /// ([`crate::blend::blend_corner::end::side_edgeuse_across_smooth_end_face`]). `None`
+    /// elsewhere. The End then treats the side edge as missed, so the round is cut by the
+    /// global merge across the end face and its continuation.
+    pub smooth_end_side: Option<EdgeuseId>,
 }
 
 impl FilletVertex {
@@ -863,6 +870,7 @@ impl FilletVertex {
             status: FilStatus::Unprocessed,
             corner,
             tangent_end: false,
+            smooth_end_side: None,
         }
     }
 

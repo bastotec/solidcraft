@@ -819,6 +819,143 @@ pub fn side_edgeuse_across_rolled_edge(
     Ok(None)
 }
 
+/// Not the fork's (solidcore-native, RC-MM-F5): the side edge of `eu` continued across its
+/// end `at` where the END face runs on smoothly: `eu`'s edge E lies between the rail's face F
+/// and the end face P, a tangent edge T between P and a face X that continues it (a flat
+/// running onto a curved face), and the third edge N at `at` between F and X. A rail on F
+/// that runs past E's end there ends on N, the boundary of F it actually reaches, as a rail
+/// continues across a seam's vertex ([`side_edgeuse_across_seam_vertex`]); the mirror of
+/// [`side_edgeuse_across_rolled_edge`], where the rail's face runs on. Returns N's edge use
+/// on `eu`'s faceuse. `None` otherwise, and for a closed edge or an `at` that is not E's end.
+///
+/// # Errors
+/// Those of the topology walks and the tangency test.
+pub fn side_edgeuse_across_smooth_end_face(
+    k: &Kernel,
+    target: &mut Brep,
+    eu: EdgeuseId,
+    at: VertexId,
+    tangency_tol_rad: f64,
+) -> Result<Option<EdgeuseId>> {
+    let Some(e) = eu1::edge(target, eu)? else {
+        return Ok(None);
+    };
+    if edge::is_closed(target, e)?
+        || (edge::start_vertex(target, e)? != Some(at) && edge::end_vertex(target, e)? != Some(at))
+    {
+        return Ok(None);
+    }
+    let Some(radial) = eu1::radial(target, eu)? else {
+        return Ok(None);
+    };
+    let (Some(f), Some(p)) = (eu1::face(target, eu)?, eu1::face(target, radial)?) else {
+        return Ok(None);
+    };
+    if f == p {
+        return Ok(None);
+    }
+    let edges = vertex::edges(target, at, None)?;
+    if edges.len() != 3 {
+        return Ok(None);
+    }
+    let others: Vec<EdgeId> = edges.iter().copied().filter(|&x| x != e).collect();
+    let Ok([a, b]) = <[EdgeId; 2]>::try_from(others) else {
+        return Ok(None);
+    };
+    let faceuse = eu1::faceuse(target, eu)?;
+    for (t, n) in [(a, b), (b, a)] {
+        let t_faces = edge::faces(target, t, None)?;
+        let n_faces = edge::faces(target, n, None)?;
+        // T: P and X; N: F and X
+        if !t_faces.contains(&p) {
+            continue;
+        }
+        let Some(&x) = t_faces.iter().find(|&&g| g != p) else {
+            continue;
+        };
+        if x == f || !n_faces.contains(&f) || !n_faces.contains(&x) || edge::is_closed(target, n)? {
+            continue;
+        }
+        let (tangent, _) = crate::blend::fillet_solver::p1::test_manifold_tangent_rollover(
+            k,
+            target,
+            t,
+            tangency_tol_rad,
+        )?;
+        if !tangent {
+            continue;
+        }
+        for y in edge::edgeuses(target, n, None, None)? {
+            if eu1::faceuse(target, y)? == faceuse {
+                return Ok(Some(y));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Not the fork's (solidcore-native, RC-MM-F5): whether a rail end found on the line of
+/// `eu`'s edge E past its far end `at` still lies on the rail's face F there, that is,
+/// whether F's boundary beyond `at` (the edge of `next`, N) turns away from F's side of E's
+/// line. F's side is the side of E's line its other edge G at E's near end lies on. The
+/// rail end is moved onto N only then: where N turns into F's side, the end found on E's
+/// line is already outside F and the existing end serves.
+///
+/// # Errors
+/// Those of the topology walks and the curve evaluations.
+pub fn smooth_end_leans_outward(
+    k: &Kernel,
+    target: &Brep,
+    eu: EdgeuseId,
+    at: VertexId,
+    next: EdgeuseId,
+) -> Result<bool> {
+    let (Some(e), Some(n)) = (eu1::edge(target, eu)?, eu1::edge(target, next)?) else {
+        return Ok(false);
+    };
+    let Some(f) = eu1::face(target, eu)? else {
+        return Ok(false);
+    };
+    let Some(c) = edge::other_vertex(target, e, Some(at))? else {
+        return Ok(false);
+    };
+    let Some(g) = vertex::edges(target, c, None)?
+        .into_iter()
+        .filter(|&x| x != e)
+        .find(|&x| edge::faces(target, x, None).is_ok_and(|fs| fs.contains(&f)))
+    else {
+        return Ok(false);
+    };
+    // the point of `edge` a fraction `frac` of its interval from its end at `from`
+    let near_point = |edge_id: EdgeId, from: VertexId, frac: f64| -> Result<Option<Point3>> {
+        let Some(curve) = edge::curve(target, edge_id)? else {
+            return Ok(None);
+        };
+        let ivl = edge::interval(target, edge_id)?;
+        let t = if edge::start_vertex(target, edge_id)? == Some(from) {
+            ivl.evaluate(frac)
+        } else {
+            ivl.evaluate(1.0 - frac)
+        };
+        Ok(curve.evaluate(k, t, 0, false, true)?.first().copied())
+    };
+    let (Some(g_pt), Some(n_pt)) = (near_point(g, c, 0.1)?, near_point(n, at, 0.05)?) else {
+        return Ok(false);
+    };
+    let (p_c, p_at) = (vertex::point(target, c)?, vertex::point(target, at)?);
+    let Ok(t_e) = (p_at - p_c).unitize() else {
+        return Ok(false);
+    };
+    let across = |d: Vec3| d - t_e * d.dot(t_e);
+    let (g_side, n_side) = (across(g_pt - p_c), across(n_pt - p_at));
+    let scale = g_side.length() * n_side.length();
+    if scale <= EFF_ZERO {
+        return Ok(false);
+    }
+    let lean = -g_side.dot(n_side) / scale;
+    Ok(lean > 1e-3)
+}
+
 /// The fork's `SmBlendCorner::SideEdgeChainTo` (63c7962): the side edge at the corner's
 /// vertex continued across seams' vertices ([`side_edgeuse_across_seam_vertex`]) up to
 /// `last`, the side edge use the rail's end was last looked for on: its edge uses in order
@@ -1682,6 +1819,12 @@ pub fn calc_end_edge_geom(
         None
     };
     for (miss, fv) in misses.iter_mut().zip([start_fv, end_fv]) {
+        // Not the fork's (RC-MM-F5): a rail end solved on the edge beyond its side edge,
+        // across a smooth end face, misses the side edge it was first solved on
+        if !cliff_overflow && pseudo.fillet_vertex(fv)?.smooth_end_side.is_some() {
+            *miss = true;
+            continue;
+        }
         if *miss || !pseudo.fillet_vertex(fv)?.is_processed() {
             continue;
         }
@@ -1740,9 +1883,12 @@ pub fn calc_end_edge_geom(
     if record.point_class() != PointClassType::Edgeuse {
         return Ok(EndEdges::Built);
     }
-    // The side edge the rail missed, and the fillet's side face it does not bound.
-    let Some(EntityRef::Edgeuse(side_eu)) = record.point_class_object() else {
-        return Err(nul());
+    // The side edge the rail missed (RC-MM-F5: the one it was first solved on, for an end
+    // solved across a smooth end face), and the fillet's side face it does not bound.
+    let side_eu = match (record.smooth_end_side, record.point_class_object()) {
+        (Some(eu), _) if !cliff_overflow => eu,
+        (_, Some(EntityRef::Edgeuse(eu))) => eu,
+        _ => return Err(nul()),
     };
     let fil_eu = corner
         .solver_eus

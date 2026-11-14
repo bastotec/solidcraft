@@ -25,6 +25,7 @@
 //! | `side_edge_in_cap` (private)      | none (#2406: a cap edge along a side edge in the cap's plane) |
 //! | [`EndEdges`], `end_face_runs_on_past_side_edge`, `rail_face` (private) | none: an end face running on tangentially past the side edge is the global merge's, not refused |
 //! | `run_on_leaves_the_part` (private) | none (#2656: a blend run on past a smooth vertex that runs out of the part ends on the end face, not capped) |
+//! | [`side_edgeuse_across_smooth_end_face`], [`smooth_end_leans_outward`] | none (solidcore-native, RC-MM-F5: the end face runs on smoothly past the side edge's far end and leans outward; the rail ends on the boundary edge beyond) |
 //! | `runs_on_across_seam` (private), [`RUNS_ON_ACROSS_SEAM`] | none (#2864: a round does not end at a seam's vertex; refused until it runs on across it) |
 //!
 //! Deviations: the fork's `NoteError(SM_FILERR_NO_ROOM, ...)` and `NoteFitRadius` before

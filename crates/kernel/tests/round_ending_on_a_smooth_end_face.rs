@@ -43,6 +43,18 @@ fn assert_round_builds(outward: bool) {
     let expected = (1.0 - std::f64::consts::FRAC_PI_4) * 36.0 * 60.0;
     let removed = before - after;
     assert!((removed - expected).abs() <= 0.01 * expected, "outward {outward}: removed {removed} vs {expected}");
+    // The end correction is ~0.074 mm^3 of the ~463.5 removed: far inside this 1% window,
+    // so a round that stops at the flat's old boundary would pass the volume check alone.
+    // Pin the end shape instead: just past x = 0 (the flat's edge, on the outward lean) the
+    // round must have cut to y ~ 18.66, not left the unrounded 19 wall; just inside it, the
+    // 18 mm wall must remain.
+    if outward {
+        let cut = Vec3::new(0.05, 18.9, 4.0);
+        let kept = Vec3::new(0.05, 18.0, 4.0);
+        assert_eq!(body.classify_point(cut).unwrap(), PointClass::Inside, "outward: the prism holds the end corner");
+        assert_eq!(round.classify_point(cut).unwrap(), PointClass::Outside, "outward: the round cuts past the flat's edge");
+        assert_eq!(round.classify_point(kept).unwrap(), PointClass::Inside, "outward: the round keeps the wall inside the flat's edge");
+    }
 }
 
 #[test]

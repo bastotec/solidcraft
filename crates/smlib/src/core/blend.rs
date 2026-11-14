@@ -686,7 +686,29 @@ fn overflow_first(
     }
     // A round mitred to one that goes first goes with it, through every mitre.
     let place = |e: &EdgeId| picked.iter().position(|p| p == e);
-    let pairs: Vec<(usize, usize)> = mitred.as_chunks::<2>().0.iter().filter_map(|[a, b]| Some((place(a)?, place(b)?))).collect();
+    let mut pairs: Vec<(usize, usize)> = mitred.as_chunks::<2>().0.iter().filter_map(|[a, b]| Some((place(a)?, place(b)?))).collect();
+    // Equal rounds on a smooth picked chain must stay in one pass. Splitting off an
+    // overflowing straight edge otherwise consumes the end of its corner arc before
+    // the latter can build the spherical continuation of the round.
+    if matches!(section, Section::Round(_)) {
+        for a in 0..again.len() {
+            for b in a + 1..again.len() {
+                if each[a].to_bits() != each[b].to_bits() {
+                    continue;
+                }
+                let (v0, v1) = edge::start_end_vertices(&fresh, again[a])?;
+                let (w0, w1) = edge::start_end_vertices(&fresh, again[b])?;
+                for v in [v0, v1].into_iter().flatten() {
+                    if (Some(v) == w0 || Some(v) == w1)
+                        && solidcore::blend::fillet_corner::p1::test_g1_continuity(k, &fresh, Some(v), Some(again[a]), Some(again[b]), 1e-5)?.0
+                    {
+                        pairs.push((a, b));
+                        break;
+                    }
+                }
+            }
+        }
+    }
     let mut grew = true;
     while grew {
         grew = false;

@@ -55,7 +55,7 @@ use solidcore::topology::face::p4 as face_p4;
 use solidcore::topology::topology_traverser::Marks;
 use solidcore::topology::{Brep, EdgeId, EdgeuseId, FaceId, FaceuseId, VertexId, edge, vertex};
 
-use solidcore_ops::blend::{Refusal, SessionCall, SessionRefusal};
+use solidcore_ops::blend::{Refusal, SessionCall, SessionRefusal, equal_smooth_pairs};
 
 use super::{Body, answer};
 use crate::{Blend, ChamferSecond, Error, Hole, HoleEdge, MAX_POINTS, Result, Turn};
@@ -691,7 +691,7 @@ fn overflow_first(
     // overflowing straight edge otherwise consumes the end of its corner arc before
     // the latter can build the spherical continuation of the round.
     if matches!(section, Section::Round(_)) {
-        pairs.extend(solidcore_ops::blend::equal_smooth_pairs(k, &fresh, &again, each)?);
+        pairs.extend(equal_smooth_pairs(k, &fresh, &again, each)?);
     }
     let mut grew = true;
     while grew {
